@@ -25,6 +25,8 @@ import axios from 'axios';
 
 // Importa funções do scheduler
 import { startScheduler, stopScheduler, getSchedulerStatus, runManual } from './scheduler/scheduler.js';
+import logger from './utils/logger.js';
+import { getHistory, getStats } from './utils/history.js';
 
 // Configurações
 const PBX_BASE_URL = 'https://reportapi02.55pbx.com:50500/api/pbx/reports/metrics';
@@ -400,7 +402,7 @@ app.post('/api/scheduler/run', async (req, res) => {
   try {
     // Executa em background para não bloquear a resposta
     runManual().catch(err => {
-      console.error('Erro na execução manual:', err);
+      logger.error('Erro na execução manual', err);
     });
     
     res.json({
@@ -408,7 +410,73 @@ app.post('/api/scheduler/run', async (req, res) => {
       message: 'Execução manual iniciada. Verifique os logs para acompanhar o progresso.'
     });
   } catch (error) {
+    logger.error('Erro ao executar manualmente', error);
     res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Retorna logs do sistema
+ */
+app.get('/api/logs', (req, res) => {
+  try {
+    const { startDate, endDate, level, limit = 100 } = req.query;
+    const logs = logger.getLogs(startDate, endDate, level, parseInt(limit));
+    
+    res.json({
+      success: true,
+      logs,
+      count: logs.length
+    });
+  } catch (error) {
+    logger.error('Erro ao obter logs', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Retorna histórico de execuções
+ */
+app.get('/api/history', (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    const history = getHistory(parseInt(limit));
+    const stats = getStats();
+    
+    res.json({
+      success: true,
+      history,
+      stats,
+      count: history.length
+    });
+  } catch (error) {
+    logger.error('Erro ao obter histórico', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Retorna estatísticas do histórico
+ */
+app.get('/api/history/stats', (req, res) => {
+  try {
+    const stats = getStats();
+    res.json({
+      success: true,
+      stats
+    });
+  } catch (error) {
+    logger.error('Erro ao obter estatísticas do histórico', error);
+    res.status(500).json({
+      success: false,
       error: error.message
     });
   }
@@ -427,6 +495,10 @@ app.listen(PORT, () => {
   console.log(`   POST /api/scheduler/start`);
   console.log(`   POST /api/scheduler/stop`);
   console.log(`   POST /api/scheduler/run`);
+  console.log(`\n📋 Rotas de histórico disponíveis:`);
+  console.log(`   GET  /api/history`);
+  console.log(`   GET  /api/history/stats`);
+  console.log(`   GET  /api/logs`);
   console.log(`\n💡 Dica: Use o dashboard para iniciar o scheduler automaticamente às 00:00\n`);
 });
 

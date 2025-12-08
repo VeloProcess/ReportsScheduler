@@ -2,6 +2,9 @@ import axios from 'axios';
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
 import dotenv from 'dotenv';
+import { retryHttpRequest } from './utils/retry.js';
+import logger from './utils/logger.js';
+import { validateChamadasData, validatePausasData } from './utils/validator.js';
 
 // Carrega variáveis de ambiente
 dotenv.config();
@@ -129,32 +132,50 @@ async function fetchPBXData(reportType, startDate, endDate) {
     
     const url = `${PBX_BASE_URL}/${formattedStartDate}/${formattedEndDate}/${PBX_QUEUE}/${PBX_NUMBER}/${PBX_AGENT}/${reportTypeFormatted}/${PBX_QUIZ_ID}/${PBX_TIMEZONE}`;
     
-    
-    const response = await axios.get(url, {
-      headers: {
-        'key': PBX_TOKEN,
-        'Chave': PBX_TOKEN,
-        'Content-Type': 'application/json'
+    // Usa retry automático para requisições HTTP
+    const response = await retryHttpRequest(
+      async () => {
+        return await axios.get(url, {
+          headers: {
+            'key': PBX_TOKEN,
+            'Chave': PBX_TOKEN,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000,
+          validateStatus: function (status) {
+            return status >= 200 && status < 500; // Aceita até 499 para ver erros da API
+          }
+        });
       },
-      // Adiciona timeout e tratamento de erros
-      timeout: 30000,
-      validateStatus: function (status) {
-        return status >= 200 && status < 500; // Aceita até 499 para ver erros da API
+      {
+        operationName: `Buscar dados Report_${reportType}`,
+        maxRetries: 3,
+        delay: 2000,
+        backoff: 2
       }
-    });
+    );
     
-    // Verifica códigos de erro específicos da API
+    // Verifica códigos de erro específicos da API (após retry)
     if (response.status === 400) {
-      throw new Error(`Erro 400: Parâmetro obrigatório faltando ou incorreto. Verifique os parâmetros da requisição.`);
+      const error = new Error(`Erro 400: Parâmetro obrigatório faltando ou incorreto. Verifique os parâmetros da requisição.`);
+      error.statusCode = 400;
+      throw error;
     }
     if (response.status === 401) {
-      throw new Error(`Erro 401: Falta de autorização. Verifique se o token está correto.`);
+      const error = new Error(`Erro 401: Falta de autorização. Verifique se o token está correto.`);
+      error.statusCode = 401;
+      throw error; // Não retry em erro de autenticação
     }
     if (response.status === 404) {
-      throw new Error(`Erro 404: Endpoint não encontrado. Verifique a URL da requisição.`);
+      const error = new Error(`Erro 404: Endpoint não encontrado. Verifique a URL da requisição.`);
+      error.statusCode = 404;
+      throw error; // Não retry em erro 404
     }
     if (response.status >= 500) {
-      throw new Error(`Erro ${response.status}: Erro interno do 55PBX. Tente novamente mais tarde.`);
+      // Este erro já foi tratado pelo retry, mas se ainda falhou após todas as tentativas:
+      const error = new Error(`Erro ${response.status}: Erro interno do 55PBX após ${3} tentativas.`);
+      error.statusCode = response.status;
+      throw error;
     }
     
     let dataToReturn = response.data;
@@ -180,10 +201,13 @@ async function fetchPBXData(reportType, startDate, endDate) {
     
     return dataToReturn;
   } catch (error) {
-    console.error(`Erro ao buscar dados do Report_${reportType}:`, error.message);
+    logger.error(`Erro ao buscar dados do Report_${reportType}`, error);
     if (error.response) {
-      console.error('Status:', error.response.status);
-      console.error('Data:', error.response.data);
+      logger.error('Detalhes da resposta HTTP', {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data
+      });
     }
     throw error;
   }
@@ -537,9 +561,12 @@ function transformPausasData(data) {
  * Autentica e adiciona dados no Google Sheets
  */
 async function saveToGoogleSheets(sheetId, data) {
-  if (!data || data.length === 0) return;
+  if (!data || data.length === 0) {
+    logger.warn('Nenhum dado para salvar na planilha');
+    return;
+  }
   
-  console.log(`  Conectando à planilha ID: ${sheetId}`);
+  logger.debug(`Conectando à planilha ID: ${sheetId}`);
   
   const auth = new JWT({
     email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -548,14 +575,27 @@ async function saveToGoogleSheets(sheetId, data) {
   });
   
   const doc = new GoogleSpreadsheet(sheetId, auth);
-  await doc.loadInfo();
-  console.log(`  Planilha: ${doc.title}`);
+  
+  // Usa retry para carregar informações da planilha
+  await retryHttpRequest(
+    async () => {
+      await doc.loadInfo();
+      return doc;
+    },
+    {
+      operationName: 'Carregar informações da planilha',
+      maxRetries: 3,
+      delay: 1000
+    }
+  );
+  
+  logger.debug(`Planilha: ${doc.title}`);
   
   const sheet = doc.sheetsByTitle[SHEET_TAB_NAME];
   if (!sheet) {
     throw new Error(`Aba "${SHEET_TAB_NAME}" não encontrada na planilha ${doc.title}`);
   }
-  console.log(`  Aba: ${sheet.title}`);
+  logger.debug(`Aba: ${sheet.title}`);
   
   // Se a planilha estiver vazia ou não tiver cabeçalhos, cria automaticamente
   let hasHeaders = false;
@@ -566,10 +606,10 @@ async function saveToGoogleSheets(sheetId, data) {
     // Se não houver cabeçalhos, cria usando as chaves do primeiro registro
     if (data.length > 0) {
       const headers = Object.keys(data[0]);
-      // Redimensiona a planilha para caber todas as colunas
       await sheet.resize({ rowCount: 1, columnCount: headers.length });
       await sheet.setHeaderRow(headers);
       hasHeaders = true;
+      logger.info('Cabeçalhos criados automaticamente', { headers });
     }
   }
   
@@ -578,10 +618,23 @@ async function saveToGoogleSheets(sheetId, data) {
     const headers = Object.keys(data[0]);
     await sheet.resize({ rowCount: 1, columnCount: headers.length });
     await sheet.setHeaderRow(headers);
+    logger.info('Cabeçalhos criados', { headers });
   }
   
-  // Adiciona as linhas diretamente
-  await sheet.addRows(data);
+  // Adiciona as linhas com retry
+  await retryHttpRequest(
+    async () => {
+      await sheet.addRows(data);
+      return true;
+    },
+    {
+      operationName: 'Salvar linhas na planilha',
+      maxRetries: 3,
+      delay: 2000
+    }
+  );
+  
+  logger.debug(`${data.length} linha(s) adicionada(s) com sucesso`);
 }
 
 /**
@@ -590,21 +643,36 @@ async function saveToGoogleSheets(sheetId, data) {
  */
 async function processChamadas(startDate, endDate) {
   try {
-    console.log('Processando Report_02 (Chamadas)...');
-    console.log(`Planilha de destino: ${SHEET_CHAMADAS_ID}`);
+    logger.etl('Processando Report_02 (Chamadas)...', { sheetId: SHEET_CHAMADAS_ID });
     
     const rawData = await fetchPBXData('2', startDate, endDate);
     const transformedData = transformChamadasData(rawData);
     
     if (transformedData.length > 0) {
-      console.log(`Salvando ${transformedData.length} chamada(s) na planilha de CHAMADAS...`);
-      await saveToGoogleSheets(SHEET_CHAMADAS_ID, transformedData);
-      console.log(`✅ ${transformedData.length} chamada(s) salva(s) na planilha de CHAMADAS`);
+      // Valida dados antes de salvar
+      logger.etl(`Validando ${transformedData.length} registro(s) de chamadas...`);
+      const validation = validateChamadasData(transformedData);
+      
+      logger.etl('Resultado da validação', {
+        total: validation.stats.total,
+        validos: validation.stats.valid,
+        invalidos: validation.stats.invalid,
+        percentualValido: `${validation.stats.validPercentage}%`
+      });
+      
+      if (validation.valid.length > 0) {
+        logger.etl(`Salvando ${validation.valid.length} chamada(s) válida(s) na planilha...`);
+        await saveToGoogleSheets(SHEET_CHAMADAS_ID, validation.valid);
+        logger.etl(`✅ ${validation.valid.length} chamada(s) salva(s) com sucesso`);
+      } else {
+        logger.warn('Nenhuma chamada válida após validação');
+        throw new Error('Todos os registros foram descartados na validação');
+      }
     } else {
-      console.log('⚠️ Nenhuma chamada encontrada no período');
+      logger.warn('Nenhuma chamada encontrada no período');
     }
   } catch (error) {
-    console.error('❌ Erro ao processar chamadas:', error.message);
+    logger.error('Erro ao processar chamadas', error);
     throw error;
   }
 }
@@ -614,55 +682,44 @@ async function processChamadas(startDate, endDate) {
  */
 async function processPausas(startDate, endDate) {
   try {
-    console.log('Processando Report_04 (Pausas)...');
-    console.log(`Planilha de destino: ${SHEET_PAUSAS_ID}`);
+    logger.etl('Processando Report_04 (Pausas)...', { sheetId: SHEET_PAUSAS_ID });
     
     const rawData = await fetchPBXData('4', startDate, endDate);
     
     // Debug: mostra estrutura dos dados recebidos
-    console.log('📋 Tipo de dados recebidos:', Array.isArray(rawData) ? 'Array' : typeof rawData);
-    if (rawData && typeof rawData === 'object' && !Array.isArray(rawData)) {
-      console.log('📋 Chaves do objeto:', Object.keys(rawData));
-      if (rawData.data_report04) {
-        console.log('📋 data_report04 encontrado, tipo:', Array.isArray(rawData.data_report04) ? 'Array' : typeof rawData.data_report04);
-        console.log('📋 Quantidade de itens:', Array.isArray(rawData.data_report04) ? rawData.data_report04.length : 'N/A');
-      }
-    } else if (Array.isArray(rawData)) {
-      console.log('📋 Array recebido diretamente, quantidade:', rawData.length);
-      if (rawData.length > 0) {
-        console.log('📋 Primeiro item (amostra):', JSON.stringify(rawData[0], null, 2).substring(0, 800));
-        // Debug específico dos campos que podem estar faltando
-        const firstItem = rawData[0];
-        console.log('📋 Campos específicos:');
-        console.log('  - date:', firstItem.date);
-        console.log('  - hour_start:', firstItem.hour_start);
-        console.log('  - hour_end:', firstItem.hour_end);
-        console.log('  - pause_reason:', firstItem.pause_reason);
-      }
-    }
+    logger.debug('Tipo de dados recebidos', {
+      type: Array.isArray(rawData) ? 'Array' : typeof rawData,
+      keys: rawData && typeof rawData === 'object' && !Array.isArray(rawData) ? Object.keys(rawData) : null,
+      length: Array.isArray(rawData) ? rawData.length : null
+    });
     
     const transformedData = transformPausasData(rawData);
     
-    // Debug: verifica se os campos foram transformados corretamente
     if (transformedData.length > 0) {
-      console.log('📋 Primeiro item transformado (amostra):');
-      const firstTransformed = transformedData[0];
-      console.log('  - Data Inicial:', firstTransformed['Data Inicial']);
-      console.log('  - Horário Inicial:', firstTransformed['Horário Inicial']);
-      console.log('  - Horário Fim:', firstTransformed['Horário Fim']);
-      console.log('  - Motivo Da Pausa:', firstTransformed['Motivo Da Pausa']);
-      console.log('📋 Todas as chaves do item transformado:', Object.keys(firstTransformed));
-    }
-    
-    if (transformedData.length > 0) {
-      console.log(`Salvando ${transformedData.length} pausa(s) na planilha de PAUSAS...`);
-      await saveToGoogleSheets(SHEET_PAUSAS_ID, transformedData);
-      console.log(`✅ ${transformedData.length} pausa(s) salva(s) na planilha de PAUSAS`);
+      // Valida dados antes de salvar
+      logger.etl(`Validando ${transformedData.length} registro(s) de pausas...`);
+      const validation = validatePausasData(transformedData);
+      
+      logger.etl('Resultado da validação', {
+        total: validation.stats.total,
+        validos: validation.stats.valid,
+        invalidos: validation.stats.invalid,
+        percentualValido: `${validation.stats.validPercentage}%`
+      });
+      
+      if (validation.valid.length > 0) {
+        logger.etl(`Salvando ${validation.valid.length} pausa(s) válida(s) na planilha...`);
+        await saveToGoogleSheets(SHEET_PAUSAS_ID, validation.valid);
+        logger.etl(`✅ ${validation.valid.length} pausa(s) salva(s) com sucesso`);
+      } else {
+        logger.warn('Nenhuma pausa válida após validação');
+        throw new Error('Todos os registros foram descartados na validação');
+      }
     } else {
-      console.log('⚠️ Nenhuma pausa encontrada no período');
+      logger.warn('Nenhuma pausa encontrada no período');
     }
   } catch (error) {
-    console.error('❌ Erro ao processar pausas:', error.message);
+    logger.error('Erro ao processar pausas', error);
     throw error;
   }
 }

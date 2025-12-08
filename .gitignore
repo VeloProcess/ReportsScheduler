@@ -3,4 +3,6 @@ node_modules/
 *.log
 .DS_Store
 service-account-key.json
+logs/
+*.log.*
 

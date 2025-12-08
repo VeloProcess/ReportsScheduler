@@ -1,6 +1,9 @@
 import cron from 'node-cron';
 import { processChamadas, processPausas, getYesterdayDates, fetchPBXData, transformChamadasData, transformPausasData } from '../index.js';
 import dotenv from 'dotenv';
+import logger from '../utils/logger.js';
+import { addExecution } from '../utils/history.js';
+import { notifyETLExecution, notifyCriticalError } from '../utils/notifications.js';
 
 dotenv.config();
 
@@ -16,20 +19,24 @@ let currentSchedule = null;
  */
 async function runETL() {
   if (isRunning) {
-    console.log('⚠️ ETL já está em execução, pulando esta execução...');
+    logger.warn('ETL já está em execução, pulando esta execução');
     return { success: false, message: 'ETL já está em execução' };
   }
 
   isRunning = true;
   const startTime = new Date();
+  let periodProcessed = 'N/A';
   
   try {
-    console.log('\n=== INICIANDO EXECUÇÃO AGENDADA ===');
-    console.log(`Data/Hora: ${startTime.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`);
+    logger.etl('=== INICIANDO EXECUÇÃO AGENDADA ===', {
+      timestamp: startTime.toISOString(),
+      timezone: 'America/Sao_Paulo'
+    });
     
     // Usa dados de ontem (padrão)
     const { startDate, endDate } = getYesterdayDates();
-    console.log(`Período: ${decodeURIComponent(startDate)} até ${decodeURIComponent(endDate)}\n`);
+    periodProcessed = `${decodeURIComponent(startDate)} até ${decodeURIComponent(endDate)}`;
+    logger.etl('Período processado', { startDate, endDate, periodProcessed });
     
     let chamadasCount = 0;
     let pausasCount = 0;
@@ -37,35 +44,39 @@ async function runETL() {
     
     // Processa chamadas
     try {
+      logger.etl('Processando chamadas...');
       await processChamadas(startDate, endDate);
       // Busca dados para contar (após processar para ter o count real)
       try {
         const rawDataChamadas = await fetchPBXData('2', startDate, endDate);
         const transformedChamadas = transformChamadasData(rawDataChamadas);
         chamadasCount = transformedChamadas.length;
+        logger.etl(`Chamadas processadas: ${chamadasCount}`);
       } catch (countError) {
         // Se falhar ao contar, não é crítico
-        console.warn('⚠️ Não foi possível contar chamadas:', countError.message);
+        logger.warn('Não foi possível contar chamadas', { error: countError.message });
       }
     } catch (error) {
-      console.error('❌ Erro ao processar chamadas:', error.message);
+      logger.error('Erro ao processar chamadas', error);
       errors.push(`Chamadas: ${error.message}`);
     }
     
     // Processa pausas
     try {
+      logger.etl('Processando pausas...');
       await processPausas(startDate, endDate);
       // Busca dados para contar (após processar para ter o count real)
       try {
         const rawDataPausas = await fetchPBXData('4', startDate, endDate);
         const transformedPausas = transformPausasData(rawDataPausas);
         pausasCount = transformedPausas.length;
+        logger.etl(`Pausas processadas: ${pausasCount}`);
       } catch (countError) {
         // Se falhar ao contar, não é crítico
-        console.warn('⚠️ Não foi possível contar pausas:', countError.message);
+        logger.warn('Não foi possível contar pausas', { error: countError.message });
       }
     } catch (error) {
-      console.error('❌ Erro ao processar pausas:', error.message);
+      logger.error('Erro ao processar pausas', error);
       errors.push(`Pausas: ${error.message}`);
     }
     
@@ -79,23 +90,41 @@ async function runETL() {
       success: errors.length === 0,
       chamadasCount,
       pausasCount,
-      errors: errors.length > 0 ? errors : undefined
+      errors: errors.length > 0 ? errors : undefined,
+      periodProcessed
     };
     
     executionHistory.push(execution);
     
-    // Mantém apenas os últimos 10 registros
+    // Mantém apenas os últimos 10 registros em memória
     if (executionHistory.length > 10) {
       executionHistory.shift();
     }
     
+    // Salva no histórico persistente
+    addExecution(execution);
+    
     lastExecution = execution;
     
-    console.log(`\n✅ Execução concluída em ${(duration / 1000).toFixed(2)}s`);
+    logger.etl(`Execução concluída em ${(duration / 1000).toFixed(2)}s`, {
+      duration: duration,
+      success: execution.success,
+      chamadasCount,
+      pausasCount,
+      errors: errors.length > 0 ? errors : undefined
+    });
+    
     if (errors.length > 0) {
-      console.log(`⚠️ Erros encontrados: ${errors.join(', ')}`);
+      logger.warn('Erros encontrados na execução', { errors });
     }
-    console.log('=====================================\n');
+    
+    // Envia notificações
+    try {
+      await notifyETLExecution(execution);
+    } catch (notifyError) {
+      logger.error('Erro ao enviar notificações', notifyError);
+      // Não falha a execução se a notificação falhar
+    }
     
     return execution;
     
@@ -108,7 +137,9 @@ async function runETL() {
       endTime,
       duration,
       success: false,
-      error: error.message
+      error: error.message,
+      errors: [error.message],
+      periodProcessed: periodProcessed || 'N/A'
     };
     
     executionHistory.push(execution);
@@ -117,10 +148,24 @@ async function runETL() {
       executionHistory.shift();
     }
     
+    // Salva no histórico persistente mesmo em caso de erro
+    addExecution(execution);
+    
     lastExecution = execution;
     
-    console.error(`\n❌ Erro na execução: ${error.message}`);
-    console.error('=====================================\n');
+    logger.error('Erro na execução do ETL', error);
+    
+    // Notifica sobre erro crítico
+    try {
+      await notifyCriticalError(error, {
+        startTime: startTime.toISOString(),
+        periodProcessed: periodProcessed || 'N/A'
+      });
+      // Também notifica como execução com erro
+      await notifyETLExecution(execution);
+    } catch (notifyError) {
+      logger.error('Erro ao enviar notificações de erro', notifyError);
+    }
     
     return execution;
   } finally {
@@ -161,21 +206,21 @@ function getNextExecutionTime(schedule) {
  */
 function startScheduler(schedule = '0 0 * * *') {
   if (cronJob) {
-    console.log('⚠️ Scheduler já está ativo');
+    logger.warn('Scheduler já está ativo');
     return { success: false, message: 'Scheduler já está ativo' };
   }
   
   // Valida expressão cron
   if (!cron.validate(schedule)) {
     const error = `Expressão cron inválida: ${schedule}`;
-    console.error(`❌ ${error}`);
+    logger.error(error);
     return { success: false, error };
   }
   
-  console.log(`🕐 Iniciando scheduler com expressão: ${schedule}`);
+  logger.info(`Iniciando scheduler com expressão: ${schedule}`);
   const nextExec = getNextExecutionTime(schedule);
   if (nextExec) {
-    console.log(`📅 Próxima execução: ${nextExec.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`);
+    logger.info(`Próxima execução: ${nextExec.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`);
   }
   
   cronJob = cron.schedule(schedule, runETL, {

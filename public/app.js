@@ -475,6 +475,269 @@ setInterval(() => {
     loadSchedulerStatus();
 }, 30 * 1000);
 
+// --- 📜 HISTÓRICO E LOGS ---
+
+// Funções antigas de tabs removidas - agora usando modal
+
+// --- 📱 CONTROLE DO SIDEBAR E MODAL ---
+
+// Alterna sidebar
+function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+    
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('active');
+}
+
+// Mostra histórico de erros
+function showErrorHistory() {
+    const modal = document.getElementById('error-history-modal');
+    modal.style.display = 'flex';
+    toggleSidebar(); // Fecha o sidebar
+    
+    // Carrega dados
+    showErrorTab('errors');
+}
+
+// Fecha histórico de erros
+function closeErrorHistory() {
+    const modal = document.getElementById('error-history-modal');
+    modal.style.display = 'none';
+}
+
+// Alterna tabs no modal de erros
+function showErrorTab(tabName) {
+    // Esconde todas as tabs
+    document.querySelectorAll('#error-history-modal .tab-content').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    document.querySelectorAll('#error-history-modal .tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    // Mostra a tab selecionada
+    const tabElement = document.getElementById(`${tabName}-tab`);
+    if (tabElement) {
+        tabElement.classList.add('active');
+    }
+    
+    // Ativa o botão que foi clicado
+    if (event && event.target) {
+        event.target.classList.add('active');
+    } else {
+        // Se não tiver event, ativa o botão correspondente
+        const buttons = document.querySelectorAll('#error-history-modal .tab-btn');
+        buttons.forEach(btn => {
+            if (btn.textContent.includes(tabName === 'errors' ? 'Apenas Erros' : 
+                                         tabName === 'all' ? 'Todas as Execuções' : 'Logs de Erro')) {
+                btn.classList.add('active');
+            }
+        });
+    }
+    
+    // Carrega dados da tab
+    if (tabName === 'errors') {
+        loadErrorHistory();
+    } else if (tabName === 'all') {
+        loadAllHistory();
+    } else if (tabName === 'logs') {
+        loadErrorLogs();
+    }
+}
+
+// Carrega apenas execuções com erro
+async function loadErrorHistory() {
+    const errorList = document.getElementById('error-history-list');
+    if (!errorList) return;
+    
+    errorList.innerHTML = '<p class="loading-text">Carregando histórico de erros...</p>';
+    
+    try {
+        const response = await fetch('/api/history?limit=100');
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            const text = await response.text();
+            console.error('Resposta não é JSON:', text.substring(0, 500));
+            throw new Error(`Servidor retornou ${contentType} em vez de JSON`);
+        }
+        
+        if (!response.ok) {
+            throw new Error(`Erro HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.success && data.stats) {
+            // Atualiza estatísticas no modal
+            document.getElementById('total-executions-modal').textContent = data.stats.total || 0;
+            document.getElementById('success-rate-modal').textContent = 
+                data.stats.successRate ? `${data.stats.successRate.toFixed(1)}%` : '-';
+            document.getElementById('avg-duration-modal').textContent = 
+                data.stats.avgDuration ? `${(data.stats.avgDuration / 1000).toFixed(1)}s` : '-';
+        }
+        
+        // Filtra apenas erros
+        const errors = data.history ? data.history.filter(exec => !exec.success) : [];
+        
+        if (errors.length > 0) {
+            errorList.innerHTML = errors.map(exec => {
+                const startTime = new Date(exec.startTime);
+                const duration = exec.duration ? `${(exec.duration / 1000).toFixed(1)}s` : '-';
+                
+                return `
+                    <div class="history-item error">
+                        <div class="history-item-info">
+                            <div class="history-item-time">
+                                ${startTime.toLocaleString('pt-BR', { 
+                                    dateStyle: 'short', 
+                                    timeStyle: 'short' 
+                                })}
+                            </div>
+                            <div class="history-item-details">
+                                ❌ Erro
+                                ${exec.periodProcessed ? ` | Período: ${exec.periodProcessed}` : ''}
+                                ${exec.errors && exec.errors.length > 0 ? 
+                                    `<br><strong>Erros:</strong> ${exec.errors.join(', ')}` : ''}
+                                ${exec.error ? `<br><strong>Erro:</strong> ${exec.error}` : ''}
+                            </div>
+                        </div>
+                        <div class="history-item-stats">
+                            <div>📞 ${exec.chamadasCount || 0}</div>
+                            <div>⏸ ${exec.pausasCount || 0}</div>
+                            <div style="margin-top: 4px; font-size: 0.75rem; opacity: 0.7;">
+                                ${duration}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            errorList.innerHTML = '<p class="loading-text">Nenhum erro encontrado no histórico</p>';
+        }
+    } catch (error) {
+        console.error('Erro ao carregar histórico de erros:', error);
+        errorList.innerHTML = `<p class="loading-text" style="color: var(--cor-erro);">Erro ao carregar histórico: ${error.message}</p>`;
+    }
+}
+
+// Carrega todas as execuções
+async function loadAllHistory() {
+    const allList = document.getElementById('all-history-list');
+    if (!allList) return;
+    
+    allList.innerHTML = '<p class="loading-text">Carregando histórico completo...</p>';
+    
+    try {
+        const response = await fetch('/api/history?limit=100');
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            throw new Error(`Servidor retornou ${contentType} em vez de JSON`);
+        }
+        
+        if (!response.ok) {
+            throw new Error(`Erro HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.history && data.history.length > 0) {
+            allList.innerHTML = data.history.map(exec => {
+                const startTime = new Date(exec.startTime);
+                const duration = exec.duration ? `${(exec.duration / 1000).toFixed(1)}s` : '-';
+                const statusClass = exec.success ? 'success' : 'error';
+                const statusIcon = exec.success ? '✅' : '❌';
+                
+                return `
+                    <div class="history-item ${statusClass}">
+                        <div class="history-item-info">
+                            <div class="history-item-time">
+                                ${startTime.toLocaleString('pt-BR', { 
+                                    dateStyle: 'short', 
+                                    timeStyle: 'short' 
+                                })}
+                            </div>
+                            <div class="history-item-details">
+                                ${statusIcon} ${exec.success ? 'Sucesso' : 'Erro'}
+                                ${exec.periodProcessed ? ` | Período: ${exec.periodProcessed}` : ''}
+                                ${exec.errors && exec.errors.length > 0 ? 
+                                    ` | Erros: ${exec.errors.join(', ')}` : ''}
+                            </div>
+                        </div>
+                        <div class="history-item-stats">
+                            <div>📞 ${exec.chamadasCount || 0}</div>
+                            <div>⏸ ${exec.pausasCount || 0}</div>
+                            <div style="margin-top: 4px; font-size: 0.75rem; opacity: 0.7;">
+                                ${duration}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            allList.innerHTML = '<p class="loading-text">Nenhuma execução encontrada</p>';
+        }
+    } catch (error) {
+        console.error('Erro ao carregar histórico completo:', error);
+        allList.innerHTML = `<p class="loading-text" style="color: var(--cor-erro);">Erro ao carregar histórico: ${error.message}</p>`;
+    }
+}
+
+// Carrega apenas logs de erro
+async function loadErrorLogs() {
+    const errorLogsList = document.getElementById('error-logs-list');
+    if (!errorLogsList) return;
+    
+    errorLogsList.innerHTML = '<p class="loading-text">Carregando logs de erro...</p>';
+    
+    try {
+        const limit = document.getElementById('error-log-limit')?.value || 100;
+        
+        const params = new URLSearchParams();
+        params.append('level', 'ERROR');
+        params.append('limit', limit);
+        
+        const response = await fetch(`/api/logs?${params.toString()}`);
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            throw new Error(`Servidor retornou ${contentType} em vez de JSON`);
+        }
+        
+        if (!response.ok) {
+            throw new Error(`Erro HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.success && data.logs && data.logs.length > 0) {
+            errorLogsList.innerHTML = data.logs.map(log => {
+                const timestamp = new Date(log.timestamp);
+                const timeStr = timestamp.toLocaleString('pt-BR', {
+                    dateStyle: 'short',
+                    timeStyle: 'medium'
+                });
+                
+                return `
+                    <div class="log-entry ERROR">
+                        <span class="log-timestamp">[${timeStr}]</span>
+                        <span class="log-level">[${log.level}]</span>
+                        <span class="log-message">${log.message}</span>
+                        ${log.data ? `<pre style="margin-top: 8px; font-size: 0.75rem; opacity: 0.8;">${JSON.stringify(log.data, null, 2)}</pre>` : ''}
+                    </div>
+                `;
+            }).join('');
+        } else {
+            errorLogsList.innerHTML = '<p class="loading-text">Nenhum log de erro encontrado</p>';
+        }
+    } catch (error) {
+        console.error('Erro ao carregar logs de erro:', error);
+        errorLogsList.innerHTML = `<p class="loading-text" style="color: var(--cor-erro);">Erro ao carregar logs: ${error.message}</p>`;
+    }
+}
+
 // Mostra/esconde loading
 function showLoading() {
     document.getElementById('loading').style.display = 'flex';
