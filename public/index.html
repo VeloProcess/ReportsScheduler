@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>55PBX ETL - Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <div class="header-left">
+                <h1><i class='bx bx-bar-chart-alt-2'></i> 55PBX ETL Dashboard</h1>
+                <div class="date-time">
+                    <span id="current-date"></span>
+                    <span id="current-time"></span>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="theme-selector">
+                    <label for="theme-select">
+                        <i class='bx bx-palette'></i> Tema:
+                    </label>
+                    <select id="theme-select" onchange="changeTheme(this.value)">
+                        <option value="light">Padrão</option>
+                        <option value="dark">Escuro</option>
+                        <option value="matrix">Especial</option>
+                    </select>
+                </div>
+                <div class="status-indicator">
+                    <span class="status-dot active"></span>
+                    <span>Sistema Online</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Countdown Section -->
+        <section class="countdown-section">
+            <div class="countdown-card">
+                <div class="countdown-icon"><i class='bx bx-time-five'></i></div>
+                <div class="countdown-content">
+                    <h3>Próxima Execução Agendada</h3>
+                    <div class="countdown-timer" id="countdown-timer">
+                        <div class="time-unit">
+                            <span class="time-value" id="hours">00</span>
+                            <span class="time-label">Horas</span>
+                        </div>
+                        <div class="time-separator">:</div>
+                        <div class="time-unit">
+                            <span class="time-value" id="minutes">00</span>
+                            <span class="time-label">Minutos</span>
+                        </div>
+                        <div class="time-separator">:</div>
+                        <div class="time-unit">
+                            <span class="time-value" id="seconds">00</span>
+                            <span class="time-label">Segundos</span>
+                        </div>
+                    </div>
+                    <p class="countdown-info" id="next-execution-time"></p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Stats Section -->
+        <section class="stats-section">
+            <div class="stat-card">
+                <div class="stat-icon"><i class='bx bx-phone-call'></i></div>
+                <div class="stat-content">
+                    <h3>Chamadas</h3>
+                    <p class="stat-value" id="chamadas-count">-</p>
+                    <p class="stat-label">Última execução</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon"><i class='bx bx-pause-circle'></i></div>
+                <div class="stat-content">
+                    <h3>Pausas</h3>
+                    <p class="stat-value" id="pausas-count">-</p>
+                    <p class="stat-label">Última execução</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon"><i class='bx bx-refresh'></i></div>
+                <div class="stat-content">
+                    <h3>Última Execução</h3>
+                    <p class="stat-value" id="last-execution">-</p>
+                    <p class="stat-label">Status</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon"><i class='bx bx-calendar'></i></div>
+                <div class="stat-content">
+                    <h3>Período Processado</h3>
+                    <p class="stat-value" id="period-processed">-</p>
+                    <p class="stat-label">Data</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Scheduler Control Section -->
+        <section class="scheduler-section">
+            <h2><i class='bx bx-time'></i> Controle do Scheduler</h2>
+            <div class="scheduler-control">
+                <div class="scheduler-status-card">
+                    <div class="status-info">
+                        <h3>Status do Scheduler</h3>
+                        <div class="status-badge" id="scheduler-status-badge">
+                            <span class="status-dot" id="scheduler-status-dot"></span>
+                            <span id="scheduler-status-text">Verificando...</span>
+                        </div>
+                        <p class="status-details" id="scheduler-schedule">-</p>
+                        <p class="status-details" id="scheduler-last-exec">Última execução: -</p>
+                    </div>
+                    <div class="scheduler-actions">
+                        <button class="btn btn-success" id="btn-start-scheduler" onclick="startScheduler()"><i class='bx bx-play'></i> Iniciar Scheduler</button>
+                        <button class="btn btn-warning" id="btn-stop-scheduler" onclick="stopScheduler()" style="display: none;"><i class='bx bx-pause'></i> Parar Scheduler</button>
+                        <button class="btn btn-primary" id="btn-run-manual" onclick="runManualETL()"><i class='bx bx-play-circle'></i> Executar Agora</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Test Section -->
+        <section class="test-section">
+            <h2><i class='bx bx-wrench'></i> Testes de Conexão</h2>
+            <div class="test-grid">
+                <div class="test-card">
+                    <h3><i class='bx bx-plug'></i> Teste API 55PBX</h3>
+                    <div class="form-group">
+                        <label>Tipo de Relatório</label>
+                        <select id="report-type">
+                            <option value="1">Report_01 - Chamadas (Agregado)</option>
+                            <option value="2">Report_02 - Detalhes de Chamadas</option>
+                            <option value="4">Report_04 - Pausas</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Data Início</label>
+                            <input type="date" id="start-date">
+                        </div>
+                        <div class="form-group">
+                            <label>Data Fim</label>
+                            <input type="date" id="end-date">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="testPBX()">Testar Conexão</button>
+                    <div id="pbx-result" class="result-box"></div>
+                </div>
+
+                <div class="test-card">
+                    <h3><i class='bx bx-spreadsheet'></i> Teste Google Sheets</h3>
+                    <div class="form-group">
+                        <label>Tipo de Planilha</label>
+                        <select id="sheet-type">
+                            <option value="chamadas">Chamadas</option>
+                            <option value="pausas">Pausas</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="testSheets()">Testar Conexão</button>
+                    <div id="sheets-result" class="result-box"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Loading Overlay -->
+        <div class="loading" id="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p>Processando...</p>
+        </div>
+    </div>
+
+    <!-- Canvas para efeito Matrix -->
+    <canvas id="matrix-canvas" class="matrix-canvas"></canvas>
+    
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+name: ETL Diário 55PBX
+
+on:
+  schedule:
+    # Executa diariamente às 10:00 UTC (07:00 BRT)
+    - cron: '0 10 * * *'
+  workflow_dispatch: # Permite execução manual
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+      
+      - name: Configurar Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Instalar dependências
+        run: npm install
+      
+      - name: Executar ETL
+        env:
+          PBX_TOKEN: ${{ secrets.PBX_TOKEN }}
+          SHEET_CHAMADAS_ID: ${{ secrets.SHEET_CHAMADAS_ID }}
+          SHEET_PAUSAS_ID: ${{ secrets.SHEET_PAUSAS_ID }}
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
+          PBX_QUEUE: ${{ secrets.PBX_QUEUE }}
+          PBX_NUMBER: ${{ secrets.PBX_NUMBER }}
+          PBX_AGENT: ${{ secrets.PBX_AGENT }}
+          PBX_QUIZ_ID: ${{ secrets.PBX_QUIZ_ID }}
+          PBX_TIMEZONE: ${{ secrets.PBX_TIMEZONE || 'America/Sao_Paulo' }}
+        run: node index.js
+
