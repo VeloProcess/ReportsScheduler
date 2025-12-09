@@ -174,30 +174,90 @@ async function runETL() {
 }
 
 /**
+ * Converte hora e minuto para expressão cron
+ * @param {string} time - Formato HH:MM (ex: "14:30")
+ * @param {boolean} daily - Se true, agenda diariamente; se false, apenas uma vez hoje
+ * @returns {string} Expressão cron
+ */
+function timeToCron(time, daily = true) {
+  const [hours, minutes] = time.split(':').map(Number);
+  
+  if (daily) {
+    // Diariamente no horário especificado: "minuto hora * * *"
+    return `${minutes} ${hours} * * *`;
+  } else {
+    // Uma vez apenas hoje: calcula o timestamp específico
+    // Para isso, precisamos usar uma expressão cron que execute apenas hoje
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0);
+    
+    // Se o horário já passou hoje, retorna null (não agenda)
+    if (today <= now) {
+      return null;
+    }
+    
+    // Retorna expressão cron para hoje: "minuto hora dia mês *"
+    return `${minutes} ${hours} ${today.getDate()} ${today.getMonth() + 1} *`;
+  }
+}
+
+/**
  * Calcula próxima execução baseada na expressão cron
  */
 function getNextExecutionTime(schedule) {
   if (!schedule) return null;
   
-  // Para '0 0 * * *' (meia-noite todo dia)
-  // Calcula próxima meia-noite no timezone de São Paulo
-  const now = new Date();
-  const next = new Date();
-  
-  // Converte para timezone de São Paulo
-  const brtOffset = -3 * 60; // -3 horas em minutos
-  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  const brtNow = new Date(utc + (brtOffset * 60000));
-  
-  // Próxima meia-noite
-  const nextMidnight = new Date(brtNow);
-  nextMidnight.setDate(nextMidnight.getDate() + 1);
-  nextMidnight.setHours(0, 0, 0, 0);
-  
-  // Converte de volta para UTC
-  const utcNext = new Date(nextMidnight.getTime() - (brtOffset * 60000));
-  
-  return utcNext;
+  try {
+    // Para expressões cron simples como "minuto hora * * *"
+    const parts = schedule.split(' ');
+    if (parts.length === 5) {
+      const [minute, hour, day, month, weekday] = parts;
+      
+      const now = new Date();
+      const next = new Date();
+      
+      // Se é diário (* * * *)
+      if (day === '*' && month === '*' && weekday === '*') {
+        next.setHours(parseInt(hour) || 0, parseInt(minute) || 0, 0, 0);
+        
+        // Se o horário já passou hoje, agenda para amanhã
+        if (next <= now) {
+          next.setDate(next.getDate() + 1);
+        }
+        
+        return next;
+      }
+      
+      // Se é uma data específica (execução única)
+      if (day !== '*' && month !== '*') {
+        next.setFullYear(now.getFullYear());
+        next.setMonth(parseInt(month) - 1);
+        next.setDate(parseInt(day));
+        next.setHours(parseInt(hour) || 0, parseInt(minute) || 0, 0, 0);
+        
+        // Se já passou, retorna null
+        if (next <= now) {
+          return null;
+        }
+        
+        return next;
+      }
+    }
+    
+    // Fallback: calcula próxima meia-noite
+    const brtOffset = -3 * 60;
+    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const brtNow = new Date(utc + (brtOffset * 60000));
+    const nextMidnight = new Date(brtNow);
+    nextMidnight.setDate(nextMidnight.getDate() + 1);
+    nextMidnight.setHours(0, 0, 0, 0);
+    const utcNext = new Date(nextMidnight.getTime() - (brtOffset * 60000));
+    
+    return utcNext;
+  } catch (error) {
+    logger.error('Erro ao calcular próxima execução', error);
+    return null;
+  }
 }
 
 /**
@@ -283,6 +343,7 @@ export {
   stopScheduler,
   getSchedulerStatus,
   runManual,
-  runETL
+  runETL,
+  timeToCron
 };
 

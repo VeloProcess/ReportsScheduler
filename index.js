@@ -591,11 +591,17 @@ async function saveToGoogleSheets(sheetId, data) {
   
   logger.debug(`Planilha: ${doc.title}`);
   
+  // Lista todas as abas disponíveis para debug
+  const availableSheets = Object.keys(doc.sheetsByTitle);
+  logger.debug(`Abas disponíveis na planilha: ${availableSheets.join(', ')}`);
+  
   const sheet = doc.sheetsByTitle[SHEET_TAB_NAME];
   if (!sheet) {
-    throw new Error(`Aba "${SHEET_TAB_NAME}" não encontrada na planilha ${doc.title}`);
+    logger.error(`Aba "${SHEET_TAB_NAME}" não encontrada na planilha ${doc.title}`);
+    logger.error(`Abas disponíveis: ${availableSheets.join(', ')}`);
+    throw new Error(`Aba "${SHEET_TAB_NAME}" não encontrada na planilha ${doc.title}. Abas disponíveis: ${availableSheets.join(', ')}`);
   }
-  logger.debug(`Aba: ${sheet.title}`);
+  logger.debug(`Usando aba: ${sheet.title}`);
   
   // Se a planilha estiver vazia ou não tiver cabeçalhos, cria automaticamente
   let hasHeaders = false;
@@ -634,7 +640,12 @@ async function saveToGoogleSheets(sheetId, data) {
     }
   );
   
-  logger.debug(`${data.length} linha(s) adicionada(s) com sucesso`);
+  logger.etl(`✅ ${data.length} linha(s) adicionada(s) com sucesso na planilha "${doc.title}", aba "${sheet.title}"`);
+  
+  // Verifica se os dados foram realmente salvos
+  await sheet.loadCells('A1:Z10'); // Carrega algumas células para verificar
+  const rowCount = sheet.rowCount;
+  logger.debug(`Total de linhas na planilha após salvar: ${rowCount}`);
 }
 
 /**

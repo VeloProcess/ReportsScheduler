@@ -125,9 +125,82 @@
             </div>
         </section>
 
+        <!-- Console de Execução -->
+        <section class="console-section">
+            <div class="console-header">
+                <h2><i class='bx bx-terminal'></i> Console de Execução</h2>
+                <button class="btn btn-small" onclick="clearConsole()">
+                    <i class='bx bx-trash'></i> Limpar
+                </button>
+            </div>
+            <div class="console-container" id="console-container">
+                <div class="console-line info">
+                    <span class="console-time">[--:--:--]</span>
+                    <span class="console-status">Sistema iniciado. Aguardando execuções...</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Logs do Servidor -->
+        <section class="server-logs-section">
+            <div class="console-header">
+                <h2><i class='bx bx-code-alt'></i> Logs do Servidor</h2>
+                <div class="logs-controls-header">
+                    <select id="server-log-level" onchange="loadServerLogs()">
+                        <option value="">Todos os níveis</option>
+                        <option value="INFO">Info</option>
+                        <option value="WARN">Avisos</option>
+                        <option value="ERROR">Erros</option>
+                        <option value="ETL">ETL</option>
+                    </select>
+                    <button class="btn btn-small" onclick="toggleServerLogsAutoRefresh()" id="toggle-auto-refresh">
+                        <i class='bx bx-refresh'></i> <span id="auto-refresh-text">Auto-atualizar: ON</span>
+                    </button>
+                    <button class="btn btn-small" onclick="clearServerLogs()">
+                        <i class='bx bx-trash'></i> Limpar
+                    </button>
+                </div>
+            </div>
+            <div class="console-container server-logs-container" id="server-logs-container">
+                <div class="console-line info">
+                    <span class="console-time">[--:--:--]</span>
+                    <span class="console-status">Carregando logs do servidor...</span>
+                </div>
+            </div>
+        </section>
+
         <!-- Scheduler Control Section -->
         <section class="scheduler-section">
             <h2><i class='bx bx-time'></i> Controle do Scheduler</h2>
+            <div class="info-alert">
+                <i class='bx bx-info-circle'></i>
+                <div class="info-alert-content">
+                    <strong>Importante:</strong> Sempre que o ETL for executado (automático ou manual), os dados processados serão <strong>APENAS do dia anterior</strong> (D-1).
+                </div>
+            </div>
+            
+            <!-- Agendador Personalizado -->
+            <div class="custom-scheduler-card">
+                <h3><i class='bx bx-calendar-edit'></i> Agendador Personalizado (Para Testes)</h3>
+                <div class="custom-scheduler-form">
+                    <div class="form-group">
+                        <label>Horário de Execução:</label>
+                        <input type="time" id="custom-schedule-time" value="00:00">
+                    </div>
+                    <div class="form-group">
+                        <label>Frequência:</label>
+                        <select id="custom-schedule-frequency">
+                            <option value="daily">Diariamente</option>
+                            <option value="once">Uma vez apenas (hoje)</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="setCustomSchedule()">
+                        <i class='bx bx-calendar-check'></i> Aplicar Agendamento Personalizado
+                    </button>
+                    <div id="custom-schedule-status" class="custom-schedule-status"></div>
+                </div>
+            </div>
+            
             <div class="scheduler-control">
                 <div class="scheduler-status-card">
                     <div class="status-info">
@@ -185,7 +258,7 @@
                         <option value="pausas">Pausas</option>
                     </select>
                 </div>
-                    <button class="btn btn-primary" onclick="testSheets()">Testar Conexão</button>
+                    <button class="btn btn-primary" onclick="testSheets(event)">Testar Conexão</button>
                 <div id="sheets-result" class="result-box"></div>
             </div>
         </div>
@@ -212,9 +285,9 @@
             </div>
             <div class="modal-body">
                 <div class="history-tabs">
-                    <button class="tab-btn active" onclick="showErrorTab('errors')">Apenas Erros</button>
-                    <button class="tab-btn" onclick="showErrorTab('all')">Todas as Execuções</button>
-                    <button class="tab-btn" onclick="showErrorTab('logs')">Logs de Erro</button>
+                    <button class="tab-btn active" onclick="showErrorTab('errors', this)">Apenas Erros</button>
+                    <button class="tab-btn" onclick="showErrorTab('all', this)">Todas as Execuções</button>
+                    <button class="tab-btn" onclick="showErrorTab('logs', this)">Logs de Erro</button>
                 </div>
                 
                 <div id="errors-tab" class="tab-content active">

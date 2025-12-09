@@ -278,7 +278,108 @@ async function loadSchedulerStatus() {
     }
 }
 
-// Inicia o scheduler
+// Configura agendamento personalizado
+async function setCustomSchedule() {
+    const timeInput = document.getElementById('custom-schedule-time');
+    const frequencySelect = document.getElementById('custom-schedule-frequency');
+    const statusDiv = document.getElementById('custom-schedule-status');
+    
+    const time = timeInput.value;
+    const frequency = frequencySelect.value;
+    
+    if (!time) {
+        statusDiv.className = 'custom-schedule-status error';
+        statusDiv.textContent = '❌ Por favor, selecione um horário.';
+        statusDiv.style.display = 'block';
+        return;
+    }
+    
+    // Verifica se o horário já passou (se for execução única)
+    if (frequency === 'once') {
+        const [hours, minutes] = time.split(':').map(Number);
+        const now = new Date();
+        const selectedTime = new Date();
+        selectedTime.setHours(hours, minutes, 0, 0);
+        
+        if (selectedTime <= now) {
+            statusDiv.className = 'custom-schedule-status error';
+            statusDiv.textContent = '❌ O horário selecionado já passou. Escolha um horário futuro.';
+            statusDiv.style.display = 'block';
+            return;
+        }
+    }
+    
+    try {
+        showLoading();
+        
+        // Para o scheduler atual se estiver rodando
+        const stopResponse = await fetch('/api/scheduler/stop', { method: 'POST' });
+        await stopResponse.json();
+        
+        // Inicia com o novo agendamento
+        const response = await fetch('/api/scheduler/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                customTime: time,
+                frequency: frequency
+            })
+        });
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            const text = await response.text();
+            console.error('Resposta não é JSON:', text.substring(0, 500));
+            hideLoading();
+            statusDiv.className = 'custom-schedule-status error';
+            statusDiv.textContent = '❌ Erro: Servidor retornou resposta inválida.';
+            statusDiv.style.display = 'block';
+            return;
+        }
+        
+        const result = await response.json();
+        hideLoading();
+        
+        if (result.success) {
+            const frequencyText = frequency === 'daily' ? 'diariamente' : 'uma vez hoje';
+            const nextExec = result.nextExecution ? new Date(result.nextExecution).toLocaleString('pt-BR', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            }) : 'em breve';
+            
+            statusDiv.className = 'custom-schedule-status success';
+            statusDiv.innerHTML = `
+                ✅ Agendamento configurado com sucesso!<br>
+                <strong>Horário:</strong> ${time}<br>
+                <strong>Frequência:</strong> ${frequencyText}<br>
+                <strong>Próxima execução:</strong> ${nextExec}
+            `;
+            statusDiv.style.display = 'block';
+            
+            await loadSchedulerStatus();
+            
+            // Limpa a mensagem após 5 segundos
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 5000);
+        } else {
+            statusDiv.className = 'custom-schedule-status error';
+            statusDiv.textContent = `❌ Erro: ${result.message || result.error}`;
+            statusDiv.style.display = 'block';
+        }
+    } catch (error) {
+        hideLoading();
+        console.error('Erro completo:', error);
+        statusDiv.className = 'custom-schedule-status error';
+        statusDiv.textContent = `❌ Erro ao configurar agendamento: ${error.message}`;
+        statusDiv.style.display = 'block';
+    }
+}
+
+// Inicia o scheduler (padrão: meia-noite)
 async function startScheduler() {
     try {
         showLoading();
@@ -341,34 +442,183 @@ async function stopScheduler() {
     }
 }
 
+// --- 🖥️ CONSOLE DE EXECUÇÃO ---
+
+let consolePollingInterval = null;
+let lastLogTimestamp = null;
+
+// Adiciona mensagem ao console
+function addConsoleMessage(type, message, progress = null) {
+    const container = document.getElementById('console-container');
+    if (!container) return;
+    
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('pt-BR', { 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit' 
+    });
+    
+    const line = document.createElement('div');
+    line.className = `console-line ${type}`;
+    
+    let progressHTML = '';
+    if (progress !== null) {
+        progressHTML = `
+            <div class="console-progress-bar">
+                <div class="console-progress-fill" style="width: ${progress}%"></div>
+            </div>
+            <div class="console-progress-text">${progress}% concluído</div>
+        `;
+    }
+    
+    line.innerHTML = `
+        <span class="console-time">[${timeStr}]</span>
+        <span class="console-status">${message}</span>
+        ${progressHTML}
+    `;
+    
+    container.appendChild(line);
+    
+    // Auto-scroll para o final
+    container.scrollTop = container.scrollHeight;
+    
+    // Limita a 200 linhas para não sobrecarregar
+    while (container.children.length > 200) {
+        container.removeChild(container.firstChild);
+    }
+}
+
+// Limpa o console
+function clearConsole() {
+    const container = document.getElementById('console-container');
+    if (container) {
+        container.innerHTML = `
+            <div class="console-line info">
+                <span class="console-time">[--:--:--]</span>
+                <span class="console-status">Console limpo. Aguardando execuções...</span>
+            </div>
+        `;
+    }
+    lastLogTimestamp = null;
+}
+
+// Inicia polling de logs durante execução
+function startConsolePolling() {
+    if (consolePollingInterval) return;
+    
+    addConsoleMessage('info', '🔍 Monitorando execução em tempo real...');
+    
+    consolePollingInterval = setInterval(async () => {
+        try {
+            const params = new URLSearchParams();
+            params.append('level', 'ETL');
+            params.append('limit', '20');
+            if (lastLogTimestamp) {
+                params.append('since', lastLogTimestamp);
+            }
+            
+            const response = await fetch(`/api/logs?${params.toString()}`);
+            if (!response.ok) return;
+            
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                return;
+            }
+            
+            const data = await response.json();
+            
+            if (data.success && data.logs && data.logs.length > 0) {
+                data.logs.forEach(log => {
+                    let type = 'info';
+                    let message = log.message;
+                    
+                    if (log.level === 'ERROR') {
+                        type = 'error';
+                    } else if (log.level === 'WARN') {
+                        type = 'warning';
+                    } else if (log.level === 'ETL') {
+                        type = 'info';
+                        // Detecta padrões de progresso
+                        if (message.includes('Processando chamadas')) {
+                            addConsoleMessage('info', '📞 Iniciando processamento de chamadas...');
+                        } else if (message.includes('Processando pausas')) {
+                            addConsoleMessage('info', '⏸ Iniciando processamento de pausas...');
+                        } else if (message.includes('processadas:')) {
+                            const match = message.match(/(\d+)/);
+                            if (match) {
+                                addConsoleMessage('success', `✅ ${message}`);
+                            }
+                        } else if (message.includes('concluída')) {
+                            addConsoleMessage('success', `✅ ${message}`);
+                        } else if (message.includes('INICIANDO')) {
+                            addConsoleMessage('info', '🚀 Execução iniciada');
+                        } else {
+                            addConsoleMessage('info', message);
+                        }
+                    }
+                    
+                    if (log.timestamp) {
+                        lastLogTimestamp = log.timestamp;
+                    }
+                });
+            }
+            
+            // Verifica se a execução terminou
+            const statusResponse = await fetch('/api/scheduler/status');
+            if (statusResponse.ok) {
+                const statusData = await statusResponse.json();
+                if (!statusData.isRunning && consolePollingInterval) {
+                    stopConsolePolling();
+                    addConsoleMessage('success', '✅ Execução finalizada');
+                    setTimeout(() => {
+                        loadSchedulerStatus();
+                        loadStats();
+                    }, 1000);
+                }
+            }
+        } catch (error) {
+            console.error('Erro ao buscar logs:', error);
+        }
+    }, 2000); // Poll a cada 2 segundos
+}
+
+// Para o polling de logs
+function stopConsolePolling() {
+    if (consolePollingInterval) {
+        clearInterval(consolePollingInterval);
+        consolePollingInterval = null;
+    }
+}
+
 // Executa ETL manualmente
 async function runManualETL() {
-    if (!confirm('Deseja executar o ETL agora? Isso processará os dados de ontem.')) {
+    if (!confirm('⚠️ ATENÇÃO: Deseja executar o ETL agora?\n\n📅 Os dados processados serão APENAS do dia anterior (D-1).\n\nDeseja continuar?')) {
         return;
     }
     
     try {
-        showLoading();
+        // Limpa console e inicia monitoramento
+        clearConsole();
+        addConsoleMessage('info', '🚀 Iniciando execução manual do ETL...');
+        startConsolePolling();
+        
         const response = await fetch('/api/scheduler/run', {
             method: 'POST'
         });
         
         const result = await response.json();
-        hideLoading();
         
         if (result.success) {
-            alert('✅ Execução manual iniciada! Verifique os logs do servidor para acompanhar o progresso.');
-            // Aguarda um pouco e atualiza o status
-            setTimeout(() => {
-                loadSchedulerStatus();
-                loadStats();
-            }, 2000);
+            addConsoleMessage('success', '✅ Execução iniciada com sucesso');
+            // O polling vai continuar monitorando
         } else {
-            alert(`❌ Erro: ${result.message || result.error}`);
+            stopConsolePolling();
+            addConsoleMessage('error', `❌ Erro ao iniciar execução: ${result.message || result.error}`);
         }
     } catch (error) {
-        hideLoading();
-        alert(`❌ Erro ao executar manualmente: ${error.message}`);
+        stopConsolePolling();
+        addConsoleMessage('error', `❌ Erro ao executar manualmente: ${error.message}`);
     }
 }
 
@@ -465,9 +715,170 @@ async function loadStats() {
     }
 }
 
+// --- 📋 LOGS DO SERVIDOR ---
+
+let serverLogsAutoRefresh = true;
+let serverLogsInterval = null;
+let lastServerLogTimestamp = null;
+
+// Carrega logs do servidor
+async function loadServerLogs() {
+    try {
+        const level = document.getElementById('server-log-level')?.value || '';
+        const params = new URLSearchParams();
+        params.append('limit', '100');
+        if (level) {
+            params.append('level', level);
+        }
+        if (lastServerLogTimestamp) {
+            params.append('since', lastServerLogTimestamp);
+        }
+        
+        const response = await fetch(`/api/logs?${params.toString()}`);
+        if (!response.ok) return;
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            return;
+        }
+        
+        const data = await response.json();
+        
+        if (data.success && data.logs && data.logs.length > 0) {
+            const container = document.getElementById('server-logs-container');
+            if (!container) return;
+            
+            // Se não há timestamp anterior, limpa o container
+            if (!lastServerLogTimestamp) {
+                container.innerHTML = '';
+            }
+            
+            data.logs.forEach(log => {
+                const logLine = createServerLogLine(log);
+                container.appendChild(logLine);
+                
+                if (log.timestamp) {
+                    const logDate = new Date(log.timestamp);
+                    if (!lastServerLogTimestamp || logDate > new Date(lastServerLogTimestamp)) {
+                        lastServerLogTimestamp = log.timestamp;
+                    }
+                }
+            });
+            
+            // Auto-scroll para o final
+            container.scrollTop = container.scrollHeight;
+            
+            // Limita a 500 linhas
+            while (container.children.length > 500) {
+                container.removeChild(container.firstChild);
+            }
+        } else if (!lastServerLogTimestamp) {
+            // Se não há logs e é a primeira carga, mostra mensagem
+            const container = document.getElementById('server-logs-container');
+            if (container) {
+                container.innerHTML = `
+                    <div class="console-line info">
+                        <span class="console-time">[--:--:--]</span>
+                        <span class="console-status">Nenhum log encontrado ainda. Os logs aparecerão aqui quando o servidor gerar mensagens.</span>
+                    </div>
+                `;
+            }
+        }
+    } catch (error) {
+        console.error('Erro ao carregar logs do servidor:', error);
+    }
+}
+
+// Cria uma linha de log do servidor
+function createServerLogLine(log) {
+    const line = document.createElement('div');
+    line.className = `console-line ${log.level || 'INFO'}`;
+    
+    const timestamp = log.timestamp ? new Date(log.timestamp).toLocaleTimeString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    }) : '--:--:--';
+    
+    const level = log.level || 'INFO';
+    const message = log.message || '';
+    
+    line.innerHTML = `
+        <span class="console-time">[${timestamp}]</span>
+        <span class="log-level-badge ${level}">${level}</span>
+        <span class="console-status">${escapeHtml(message)}</span>
+    `;
+    
+    return line;
+}
+
+// Escapa HTML para prevenir XSS
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Limpa logs do servidor
+function clearServerLogs() {
+    const container = document.getElementById('server-logs-container');
+    if (container) {
+        container.innerHTML = `
+            <div class="console-line info">
+                <span class="console-time">[--:--:--]</span>
+                <span class="console-status">Logs limpos. Aguardando novas mensagens...</span>
+            </div>
+        `;
+    }
+    lastServerLogTimestamp = null;
+}
+
+// Toggle auto-refresh dos logs
+function toggleServerLogsAutoRefresh() {
+    serverLogsAutoRefresh = !serverLogsAutoRefresh;
+    const toggleBtn = document.getElementById('toggle-auto-refresh');
+    const textSpan = document.getElementById('auto-refresh-text');
+    
+    if (serverLogsAutoRefresh) {
+        textSpan.textContent = 'Auto-atualizar: ON';
+        toggleBtn.classList.add('btn-success');
+        toggleBtn.classList.remove('btn-warning');
+        startServerLogsPolling();
+    } else {
+        textSpan.textContent = 'Auto-atualizar: OFF';
+        toggleBtn.classList.add('btn-warning');
+        toggleBtn.classList.remove('btn-success');
+        stopServerLogsPolling();
+    }
+}
+
+// Inicia polling de logs do servidor
+function startServerLogsPolling() {
+    if (serverLogsInterval) return;
+    
+    // Carrega logs imediatamente
+    loadServerLogs();
+    
+    // Depois atualiza a cada 2 segundos
+    serverLogsInterval = setInterval(() => {
+        if (serverLogsAutoRefresh) {
+            loadServerLogs();
+        }
+    }, 2000);
+}
+
+// Para o polling de logs
+function stopServerLogsPolling() {
+    if (serverLogsInterval) {
+        clearInterval(serverLogsInterval);
+        serverLogsInterval = null;
+    }
+}
+
 // Carrega estatísticas e status do scheduler ao iniciar
 loadStats();
 loadSchedulerStatus();
+startServerLogsPolling(); // Inicia o polling de logs automaticamente
 
 // Recarrega a cada 30 segundos
 setInterval(() => {
@@ -507,7 +918,7 @@ function closeErrorHistory() {
 }
 
 // Alterna tabs no modal de erros
-function showErrorTab(tabName) {
+function showErrorTab(tabName, clickedButton = null) {
     // Esconde todas as tabs
     document.querySelectorAll('#error-history-modal .tab-content').forEach(tab => {
         tab.classList.remove('active');
@@ -522,11 +933,11 @@ function showErrorTab(tabName) {
         tabElement.classList.add('active');
     }
     
-    // Ativa o botão que foi clicado
-    if (event && event.target) {
-        event.target.classList.add('active');
+    // Ativa o botão que foi clicado ou encontra o correto
+    if (clickedButton) {
+        clickedButton.classList.add('active');
     } else {
-        // Se não tiver event, ativa o botão correspondente
+        // Se não tiver botão clicado, ativa o botão correspondente
         const buttons = document.querySelectorAll('#error-history-modal .tab-btn');
         buttons.forEach(btn => {
             if (btn.textContent.includes(tabName === 'errors' ? 'Apenas Erros' : 
@@ -839,9 +1250,17 @@ async function testPBX() {
 }
 
 // Testa conexão com Google Sheets
-async function testSheets() {
+async function testSheets(event) {
     const sheetType = document.getElementById('sheet-type').value;
     const resultBox = document.getElementById('sheets-result');
+    
+    // Previne múltiplos cliques
+    const btn = event?.target || document.querySelector('button[onclick*="testSheets"]');
+    if (btn) {
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        btn.style.cursor = 'not-allowed';
+    }
     
     showLoading();
     resultBox.style.display = 'none';
@@ -854,6 +1273,12 @@ async function testSheets() {
             },
             body: JSON.stringify({ sheetType })
         });
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            const text = await response.text();
+            throw new Error(`Servidor retornou ${contentType} em vez de JSON. Status: ${response.status}`);
+        }
         
         const data = await response.json();
         
@@ -886,20 +1311,56 @@ async function testSheets() {
             `;
         } else {
             resultBox.className = 'result-box error';
-            resultBox.innerHTML = `
+            let errorHTML = `
                 <h3>❌ Falha na Conexão</h3>
-                <p><strong>Erro:</strong> ${data.error}</p>
-                ${data.details ? `<pre>${formatJSON(data.details)}</pre>` : ''}
+                <p><strong>Erro:</strong> ${data.error || 'Erro desconhecido'}</p>
             `;
+            
+            if (data.message) {
+                errorHTML += `<p style="margin-top: 12px; color: #f59e0b;"><strong>ℹ️ Informação:</strong> ${data.message}</p>`;
+            }
+            
+            if (data.missing) {
+                errorHTML += `<div style="margin-top: 12px; padding: 12px; background: rgba(244, 67, 54, 0.1); border-radius: 8px;">`;
+                errorHTML += `<p style="font-weight: 600; margin-bottom: 8px;">Credenciais faltando:</p>`;
+                if (data.missing.email) {
+                    errorHTML += `<p>❌ GOOGLE_SERVICE_ACCOUNT_EMAIL não configurado</p>`;
+                }
+                if (data.missing.key) {
+                    errorHTML += `<p>❌ GOOGLE_PRIVATE_KEY não configurado</p>`;
+                }
+                errorHTML += `</div>`;
+            }
+            
+            if (data.details) {
+                errorHTML += `<details style="margin-top: 12px;">
+                    <summary style="cursor: pointer; font-weight: 600;">Detalhes técnicos</summary>
+                    <pre style="margin-top: 8px;">${formatJSON(data.details)}</pre>
+                </details>`;
+            }
+            
+            resultBox.innerHTML = errorHTML;
         }
     } catch (error) {
         resultBox.className = 'result-box error';
         resultBox.innerHTML = `
             <h3>❌ Erro</h3>
-            <p>${error.message}</p>
+            <p><strong>Erro:</strong> ${error.message}</p>
+            <p style="margin-top: 12px; color: #f59e0b;">
+                <strong>ℹ️ Dica:</strong> Verifique se o servidor está rodando e se as credenciais estão configuradas no arquivo .env
+            </p>
         `;
     } finally {
         hideLoading();
         resultBox.style.display = 'block';
+        
+        // Reabilita o botão após um pequeno delay
+        if (btn) {
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.style.cursor = 'pointer';
+            }, 500);
+        }
     }
 }

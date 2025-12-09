@@ -24,7 +24,7 @@ import { JWT } from 'google-auth-library';
 import axios from 'axios';
 
 // Importa funções do scheduler
-import { startScheduler, stopScheduler, getSchedulerStatus, runManual } from './scheduler/scheduler.js';
+import { startScheduler, stopScheduler, getSchedulerStatus, runManual, timeToCron } from './scheduler/scheduler.js';
 import logger from './utils/logger.js';
 import { getHistory, getStats } from './utils/history.js';
 
@@ -268,11 +268,23 @@ app.post('/api/test/sheets', async (req, res) => {
     const targetSheetId = sheetId || (sheetType === 'chamadas' ? SHEET_CHAMADAS_ID : SHEET_PAUSAS_ID);
     
     if (!targetSheetId) {
-      return res.status(400).json({ error: 'ID da planilha não fornecido' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'ID da planilha não fornecido',
+        message: 'Configure SHEET_CHAMADAS_ID ou SHEET_PAUSAS_ID no arquivo .env'
+      });
     }
     
     if (!GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
-      return res.status(500).json({ error: 'Credenciais do Google não configuradas' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Credenciais do Google não configuradas',
+        message: 'Configure GOOGLE_SERVICE_ACCOUNT_EMAIL e GOOGLE_PRIVATE_KEY no arquivo .env',
+        missing: {
+          email: !GOOGLE_SERVICE_ACCOUNT_EMAIL,
+          key: !GOOGLE_PRIVATE_KEY
+        }
+      });
     }
     
     // Cria cliente de autenticação JWT
@@ -363,8 +375,24 @@ app.get('/api/scheduler/status', (req, res) => {
  */
 app.post('/api/scheduler/start', (req, res) => {
   try {
-    const { schedule } = req.body;
-    const result = startScheduler(schedule || '0 0 * * *');
+    const { schedule, customTime, frequency } = req.body;
+    
+    let cronExpression = schedule || '0 0 * * *';
+    
+    // Se foi fornecido um horário personalizado, converte para cron
+    if (customTime) {
+      const daily = frequency !== 'once';
+      cronExpression = timeToCron(customTime, daily);
+      
+      if (!cronExpression) {
+        return res.status(400).json({
+          success: false,
+          error: 'O horário especificado já passou hoje. Escolha um horário futuro.'
+        });
+      }
+    }
+    
+    const result = startScheduler(cronExpression);
     
     if (result.success) {
       res.json(result);
@@ -422,8 +450,10 @@ app.post('/api/scheduler/run', async (req, res) => {
  */
 app.get('/api/logs', (req, res) => {
   try {
-    const { startDate, endDate, level, limit = 100 } = req.query;
-    const logs = logger.getLogs(startDate, endDate, level, parseInt(limit));
+    const { startDate, endDate, level, since, limit = 100 } = req.query;
+    // Se 'since' for fornecido, usa como startDate (logs desde esse timestamp)
+    const startDateFilter = since ? new Date(since) : (startDate ? new Date(startDate) : null);
+    const logs = logger.getLogs(startDateFilter, endDate ? new Date(endDate) : null, level, parseInt(limit));
     
     res.json({
       success: true,
@@ -499,6 +529,24 @@ app.listen(PORT, () => {
   console.log(`   GET  /api/history`);
   console.log(`   GET  /api/history/stats`);
   console.log(`   GET  /api/logs`);
-  console.log(`\n💡 Dica: Use o dashboard para iniciar o scheduler automaticamente às 00:00\n`);
+  
+  // Inicia o scheduler automaticamente ao iniciar o servidor
+  try {
+    const result = startScheduler('0 0 * * *'); // Diariamente às 00:00
+    if (result.success) {
+      console.log(`\n⏰ Scheduler iniciado automaticamente`);
+      console.log(`   Agendamento: ${result.schedule} (Diariamente às 00:00)`);
+      if (result.nextExecution) {
+        console.log(`   Próxima execução: ${result.nextExecution.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`);
+      }
+    } else {
+      console.log(`\n⚠️ Não foi possível iniciar scheduler automaticamente: ${result.message || result.error}`);
+    }
+  } catch (error) {
+    logger.error('Erro ao iniciar scheduler automaticamente', error);
+    console.log(`\n⚠️ Erro ao iniciar scheduler: ${error.message}`);
+  }
+  
+  console.log(`\n`);
 });
 
