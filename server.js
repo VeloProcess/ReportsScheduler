@@ -512,9 +512,31 @@ app.get('/api/history/stats', (req, res) => {
   }
 });
 
-// Rota principal
+// Rota principal - serve o index.html
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  try {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  } catch (error) {
+    console.error('Erro ao servir index.html:', error);
+    res.status(500).send('Erro ao carregar página');
+  }
+});
+
+// Serve arquivos estáticos (CSS, JS, imagens, etc)
+app.get('/*', (req, res, next) => {
+  // Se for uma rota de API, passa para o próximo handler
+  if (req.path.startsWith('/api/')) {
+    return next();
+  }
+  
+  // Tenta servir arquivo estático
+  const filePath = path.join(__dirname, 'public', req.path);
+  res.sendFile(filePath, (err) => {
+    // Se arquivo não encontrado e não for API, serve index.html (SPA)
+    if (err && !req.path.startsWith('/api/')) {
+      res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    }
+  });
 });
 
 // Handler de erro global
