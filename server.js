@@ -9,7 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json({ limit: '50mb' })); // Aumenta limite para 50MB
@@ -517,7 +517,23 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
+// Handler de erro global
+app.use((err, req, res, next) => {
+  console.error('Erro não tratado:', err);
+  logger.error('Erro não tratado', err);
+  res.status(500).json({
+    success: false,
+    error: process.env.NODE_ENV === 'production' ? 'Erro interno do servidor' : err.message,
+    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
+  });
+});
+
+// Exporta o app para Vercel
+export default app;
+
+// Inicia servidor apenas se não estiver em ambiente serverless
+if (process.env.VERCEL !== '1' && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  app.listen(PORT, () => {
   console.log(`\n✅ Servidor rodando em http://localhost:${PORT}`);
   console.log(`📊 Dashboard disponível em http://localhost:${PORT}`);
   console.log(`⏰ Rotas do scheduler disponíveis:`);
@@ -530,7 +546,7 @@ app.listen(PORT, () => {
   console.log(`   GET  /api/history/stats`);
   console.log(`   GET  /api/logs`);
   
-  // Inicia o scheduler automaticamente ao iniciar o servidor
+  // Inicia o scheduler automaticamente (já estamos dentro do if que verifica serverless)
   try {
     const result = startScheduler('0 0 * * *'); // Diariamente às 00:00
     if (result.success) {
@@ -548,5 +564,6 @@ app.listen(PORT, () => {
   }
   
   console.log(`\n`);
-});
+  });
+}
 

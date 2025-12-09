@@ -10,9 +10,16 @@ const LOGS_DIR = path.join(__dirname, '..', 'logs');
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_LOG_FILES = 5;
 
-// Garante que o diretório de logs existe
-if (!fs.existsSync(LOGS_DIR)) {
-  fs.mkdirSync(LOGS_DIR, { recursive: true });
+// Verifica se está em ambiente serverless
+const IS_SERVERLESS = process.env.VERCEL === '1' || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NODE_ENV === 'production';
+
+// Garante que o diretório de logs existe (apenas se não for serverless)
+if (!IS_SERVERLESS && !fs.existsSync(LOGS_DIR)) {
+  try {
+    fs.mkdirSync(LOGS_DIR, { recursive: true });
+  } catch (error) {
+    console.warn('Não foi possível criar diretório de logs:', error.message);
+  }
 }
 
 /**
@@ -66,11 +73,30 @@ function rotateLogFile(logFile) {
  * Escreve no arquivo de log
  */
 function writeToFile(level, message, data = null) {
+  // Em ambiente serverless, apenas loga no console
+  if (IS_SERVERLESS) {
+    return;
+  }
+  
+  // Verifica se o diretório existe antes de escrever
+  if (!fs.existsSync(LOGS_DIR)) {
+    try {
+      fs.mkdirSync(LOGS_DIR, { recursive: true });
+    } catch (error) {
+      console.warn('Não foi possível criar diretório de logs:', error.message);
+      return;
+    }
+  }
+  
   const today = new Date().toISOString().split('T')[0];
   const logFile = path.join(LOGS_DIR, `etl-${today}.log`);
   
   // Rotaciona se necessário
-  rotateLogFile(logFile);
+  try {
+    rotateLogFile(logFile);
+  } catch (error) {
+    console.warn('Erro ao rotacionar log:', error.message);
+  }
   
   const logMessage = formatLogMessage(level, message, data);
   
@@ -146,11 +172,23 @@ const logger = {
    * Obtém logs de um período
    */
   getLogs(startDate = null, endDate = null, level = null, limit = 100) {
+    // Em ambiente serverless, retorna array vazio (logs não são persistidos)
+    if (IS_SERVERLESS || !fs.existsSync(LOGS_DIR)) {
+      return [];
+    }
+    
     const logs = [];
-    const files = fs.readdirSync(LOGS_DIR)
-      .filter(file => file.startsWith('etl-') && file.endsWith('.log'))
-      .sort()
-      .reverse();
+    let files = [];
+    
+    try {
+      files = fs.readdirSync(LOGS_DIR)
+        .filter(file => file.startsWith('etl-') && file.endsWith('.log'))
+        .sort()
+        .reverse();
+    } catch (error) {
+      console.warn('Erro ao ler diretório de logs:', error.message);
+      return [];
+    }
 
     for (const file of files) {
       const filePath = path.join(LOGS_DIR, file);
